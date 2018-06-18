@@ -1,24 +1,29 @@
 #include <comfybar/bar.h>
 #include <iostream>
 #include <cstring>
+#include <X11/Xatom.h>
 
 namespace comfybar {
   Bar::Bar(int argc, char** argv):m_created(false), m_width(100),
     m_height(30) {
-    
   }
 
-  static void inline barTestCookie(xcb_void_cookie_t cookie, 
-    xcb_connection_t* connection, char* msg) {
-    xcb_generic_error_t *error = xcb_request_check (connection, cookie);
-    if(error) {
-      printf("%s\n", msg);
-    }
-  }
   void Bar::create() {
     try {
       m_config.loadFromFile("res/config.conf");
-      char* value = m_config.getSectionValue("bar", "height");
+      // the config is loaded ==> get all needed values
+      char* temp_value;
+      temp_value = m_config.getSectionValue("bar", "height");
+      if(temp_value) {
+        m_height = atoi(temp_value);
+        //printf("Value: %d\n", m_height);
+      }
+
+      temp_value = m_config.getSectionValue("bar", "bottom");
+      if(temp_value) {
+        m_bottom = (strcmp(temp_value, "true") == 0)? true : false;
+      }
+
     } catch(ConfigException& ex) {
       if(!ex.getLineNumber()) {
         std::cout << ex.getMessage() << std::endl;
@@ -27,25 +32,24 @@ namespace comfybar {
         return;
       }
     }
-    
-    m_connection = xcb_connect(nullptr, NULL);
-    m_screen = xcb_setup_roots_iterator(xcb_get_setup(m_connection)).data;
-    m_window = xcb_generate_id(m_connection);
-    uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT | 
-      XCB_CW_EVENT_MASK;
-    
-    // color taken from VSCode Nord Theme base color
 
-    uint32_t values[] { 0x2e3440, 0, XCB_EVENT_MASK_EXPOSURE | 
-      XCB_EVENT_MASK_BUTTON_PRESS | 
-      XCB_EVENT_MASK_EXPOSURE |
-      XCB_EVENT_MASK_BUTTON_MOTION};
+    m_display = XOpenDisplay(None);
+    if(!m_display) {
+      fprintf(stderr, "Unable to connect to the X server.\n");
+      return;
+    }
+    m_screen = XDefaultScreen(m_display);
 
-    xcb_create_window(m_connection, 0, m_window, 
-      m_screen->root, 20, 0, m_width, m_height, 0, 
-        XCB_WINDOW_CLASS_INPUT_OUTPUT, 
-          m_screen->root_visual, mask, values);
-      
+    uint mask = CWOverrideRedirect | CWBackPixel | CWEventMask;
+    m_wattributes.override_redirect = 0;
+    m_wattributes.background_pixel = 0x2e3440;
+    m_wattributes.event_mask = ExposureMask | ButtonPressMask;
+
+    m_window = XCreateWindow(m_display, XRootWindow(m_display, m_screen),
+      0, m_bottom?XDisplayHeight(m_display, m_screen) : 0, 1, m_height, 0, 
+        XDefaultDepth(m_display, m_screen), InputOutput, 
+          XDefaultVisual(m_display, m_screen), 
+            mask, &m_wattributes);
     enum {
       NET_WM_WINDOW_TYPE,
       NET_WM_WINDOW_TYPE_DOCK,
@@ -56,7 +60,6 @@ namespace comfybar {
       NET_WM_STATE_STICKY,
       NET_WM_STATE_ABOVE,
     };
-
     const char *atom_names[] = {
         "_NET_WM_WINDOW_TYPE",
         "_NET_WM_WINDOW_TYPE_DOCK",
@@ -67,39 +70,30 @@ namespace comfybar {
         "_NET_WM_STATE_STICKY",
         "_NET_WM_STATE_ABOVE",
     };
+    const int atoms_count = sizeof(atom_names)/sizeof(char*);
+    Atom atom_list[atoms_count];
 
-    const int atoms_count = sizeof(atom_names)/sizeof(char *);
-    xcb_intern_atom_cookie_t atom_cookie[atoms_count];
-    xcb_atom_t atom_list[atoms_count];
-    xcb_intern_atom_reply_t *atom_reply;
-
-    for (int i = 0; i < atoms_count; i++)
-        atom_cookie[i] = xcb_intern_atom(m_connection, 0, 
-          strlen(atom_names[i]), atom_names[i]);
-
-    for (int i = 0; i < atoms_count; i++) {
-        atom_reply = xcb_intern_atom_reply(m_connection, atom_cookie[i], NULL);
-        if (!atom_reply)
-            return;
-        atom_list[i] = atom_reply->atom;
-        free(atom_reply);
+    for(int i = 0; i < atoms_count; i++) {
+      atom_list[i] = XInternAtom(m_display, atom_names[i], 0);
     }
 
-    xcb_change_property(m_connection, XCB_PROP_MODE_REPLACE, m_window,
-      atom_list[NET_WM_WINDOW_TYPE], XCB_ATOM_ATOM, 32, 1, 
-        &atom_list[NET_WM_WINDOW_TYPE_DOCK]);
-    xcb_change_property(m_connection, XCB_PROP_MODE_APPEND,  m_window,
-      atom_list[NET_WM_STATE], XCB_ATOM_ATOM, 32, 2, 
-        &atom_list[NET_WM_STATE_STICKY]);
-    xcb_change_property(m_connection, XCB_PROP_MODE_REPLACE, m_window,
-      atom_list[NET_WM_DESKTOP], XCB_ATOM_CARDINAL, 32, 1, 
-        (const int []){ -1 } );
-    
-    xcb_change_property(m_connection, XCB_PROP_MODE_REPLACE, m_window,
-      XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, 7, "comfybar");
-    xcb_change_property(m_connection, XCB_PROP_MODE_REPLACE, m_window, 
-      XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8 ,strlen("comfybar"), "comfybar");
+    // set all needed properties for the bar
+    XChangeProperty(m_display, m_window, atom_list[NET_WM_WINDOW_TYPE], XA_ATOM,
+      32, PropModeReplace, (unsigned char*)&atom_list[NET_WM_WINDOW_TYPE_DOCK], 
+        1);
+    XChangeProperty(m_display, m_window, atom_list[NET_WM_STATE], XA_ATOM,
+      32, PropModeAppend, (unsigned char*)&atom_list[NET_WM_STATE_STICKY], 
+        2);
+    XChangeProperty(m_display, m_window, atom_list[NET_WM_DESKTOP], 
+      XA_CARDINAL, 32, PropModeReplace, 
+        (unsigned char*)(const int[]) {-1}, 
+          1);
+    XChangeProperty(m_display, m_window, XInternAtom(m_display, "WM_NAME", 0), 
+      XA_STRING, 8, PropModeReplace, 
+        (unsigned char*)"comfybar", 
+          strlen("comfybar") + 1);
 
+    // bar is created with no errors ==> show it
     m_created = true;
   }
   
@@ -107,42 +101,35 @@ namespace comfybar {
     return m_created;
   }
 
-  void Bar::m_handleMouseButtonPress(xcb_generic_event_t* event) {
-    xcb_button_press_event_t* btn_event = (xcb_button_press_event_t*) event;
-    std::cout << "Mouse button pressed (" << btn_event->detail << "): " 
-      << btn_event->event_x << ":" << btn_event->event_y << std::endl;
+  void Bar::m_handleMouseButtonPress(XEvent* event) {
     m_running = false;
   }
   
-  void Bar::m_handleExposureEvent(xcb_generic_event_t* event) {
+  void Bar::m_handleExposureEvent(XEvent* event) {
   }
 
   void Bar::show() {
-    xcb_map_window(m_connection, m_window);
-    xcb_flush(m_connection);
+    XEvent event;
+    m_running = true; // set running to true
 
-    m_running = true;
-
-    xcb_generic_event_t* event;
+    XMapWindow(m_display, m_window);
     while(m_running) {
-      event = xcb_wait_for_event(m_connection);
-      if(!event) break; // an error occured
-      switch(event->response_type & ~0x80) {
-        case XCB_EXPOSE:
-          m_handleExposureEvent(event);
+      XNextEvent(m_display, &event);
+      switch(event.type) {
+        case Expose:
+          m_handleExposureEvent(&event);
           break;
-        case XCB_BUTTON_PRESS:
-          m_handleMouseButtonPress(event);
+        case ButtonPress:
+          m_handleMouseButtonPress(&event);
           break;
       }
-      free(event);
     }
   }
 
   Bar::~Bar() {
-    if(m_connection) {
-      xcb_flush(m_connection);
-      xcb_disconnect(m_connection);
+    if(m_display) {
+      XDestroyWindow(m_display, m_window);
+      XCloseDisplay(m_display);
     }
   }
 }

@@ -1,7 +1,7 @@
 #ifndef _COMFYBAR_BAR_H_
 #define _COMFYBAR_BAR_H_
 
-#include <xcb/xcb.h>
+#include <X11/Xlib.h>
 #include <vector>
 #include <comfybar/area.h>
 #include <comfybar/config.h>
@@ -17,8 +17,8 @@ namespace comfybar {
 
   private:
     // helper functions
-    void m_handleMouseButtonPress(xcb_generic_event_t* );
-    void m_handleExposureEvent(xcb_generic_event_t* );
+    void m_handleMouseButtonPress(XEvent* );
+    void m_handleExposureEvent(XEvent* );
 
     // all the areas in the bar => every module has its own area
     std::vector<comfybar::Area> m_areas;
@@ -26,13 +26,14 @@ namespace comfybar {
     // config class
     Config m_config;
 
-    // xcb stuff
-    xcb_connection_t* m_connection;
-    xcb_screen_t* m_screen;
-    xcb_window_t m_window;
-    int m_screen_cnt, m_width, m_height;
-    bool m_running;
-    bool m_created;
+    // Xlib stuff
+    Display* m_display;
+    Window m_window;
+    XSetWindowAttributes m_wattributes;
+
+    // bar properties
+    int m_screen, m_width, m_height;
+    bool m_running, m_created, m_bottom;
   };
 }
 
